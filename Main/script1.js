@@ -8,16 +8,36 @@ let dailySales = {};
 let products = [];
 let history = [];
 let menuSales = {};
+let staff = [];
 let isAdmin = false;
 let paymentMethod = "";
 let showTodayOnly = false;
 let tempNumber = "";
 let adminPassword = "";
+let currentStaff = null; // { number, name }
 
 // ===== 起動 =====
 window.onload = function () {
-  loadData();
+  loadData().then(() => {
+    askStaffLogin();
+  });
 };
+
+// ===== 従業員ログイン =====
+function askStaffLogin() {
+  let num = prompt("従業員番号（4桁）を入力してください");
+  if (!num) { askStaffLogin(); return; }
+  const found = staff.find(s => String(s.number) === String(num).padStart(4, '0') || String(s.number) === String(num));
+  if (!found) {
+    alert("登録されていない番号です");
+    askStaffLogin();
+    return;
+  }
+  currentStaff = found;
+  document.getElementById("currentStaffDisplay").textContent = "担当：" + found.name;
+  postData({ type: "login", staffNumber: found.number, staffName: found.name });
+  alert(found.name + " さんでログインしました");
+}
 
 // ===== サーバーから全データ取得 =====
 async function loadData() {
@@ -29,6 +49,8 @@ async function loadData() {
     dailySales    = data.dailySales || {};
     menuSales     = data.menuSales  || {};
     adminPassword = String(data.password || "");
+    staff         = data.staff      || [];
+    updateActiveStaffDisplay(data.activeStaff || []);
     renderProducts();
     loadHistoryFromServer();
     updateDailySales();
@@ -203,7 +225,7 @@ function clearNumber() {
   document.getElementById("displayNumber").textContent = "0";
 }
 
-// ===== 番号確定 → 会計完了（★即リセット、送信はバックグラウンド）=====
+// ===== 番号確定 → 会計完了 =====
 async function confirmNumber() {
   if (!tempNumber) {
     alert("番号を入力してください");
@@ -211,15 +233,16 @@ async function confirmNumber() {
   }
   let today = getToday();
   const record = {
-    date:    new Date().toISOString(),
-    dateKey: today,
-    number:  tempNumber,
-    total:   total,
-    payment: paymentMethod,
-    items:   JSON.parse(JSON.stringify(cart))
+    date:        new Date().toISOString(),
+    dateKey:     today,
+    number:      tempNumber,
+    total:       total,
+    payment:     paymentMethod,
+    items:       JSON.parse(JSON.stringify(cart)),
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
   };
 
-  // ★まず画面をリセット（待たない）
   cart = {};
   total = 0;
   paymentMethod = "";
@@ -234,18 +257,13 @@ async function confirmNumber() {
   document.getElementById("paidAmount").value = "";
   updateDisplay();
 
-  // 送信はバックグラウンドで（awaitしない）
   postData({ type: "checkout", record });
 
-  // ローカルで即反映
   history.push(record);
-
-  // 日別売上をローカルで即反映
   if (!dailySales[record.dateKey]) dailySales[record.dateKey] = { cash: 0, paypay: 0 };
   if (record.payment === "現金") dailySales[record.dateKey].cash += record.total;
   else dailySales[record.dateKey].paypay += record.total;
 
-  // メニュー売上をローカルで即反映
   for (let name in record.items) {
     const count = record.items[name].count;
     if (!menuSales[name]) menuSales[name] = { total: 0, daily: {} };
@@ -261,7 +279,8 @@ async function confirmNumber() {
 function loadHistoryFromServer() {
   const historyList = document.getElementById("history");
   historyList.innerHTML = "";
-  history.forEach((h, index) => {
+  [...history].reverse().forEach((h, revIndex) => {
+    const index = history.length - 1 - revIndex;
     const li = document.createElement("li");
     li.style.cssText = "display:flex;justify-content:space-between;align-items:center;padding:6px 0;border-bottom:1px solid #eee;";
     let itemsText = Object.entries(h.items || {})
@@ -287,13 +306,9 @@ async function deleteHistory(index, record) {
   let ok = confirm("この会計を削除しますか？");
   if (!ok) return;
 
-  // 自動更新を停止
   clearInterval(autoRefresh);
-
-  // ローカルから即削除
   history.splice(index, 1);
 
-  // メニュー売上をローカルで即反映
   for (let name in record.items) {
     if (menuSales[name]) {
       menuSales[name].total = Math.max(0, menuSales[name].total - record.items[name].count);
@@ -303,7 +318,6 @@ async function deleteHistory(index, record) {
     }
   }
 
-  // 日別売上をローカルで即反映
   if (dailySales[record.dateKey]) {
     if (record.payment === "現金") {
       dailySales[record.dateKey].cash = Math.max(0, dailySales[record.dateKey].cash - record.total);
@@ -316,10 +330,13 @@ async function deleteHistory(index, record) {
   updateDailySales();
   showMenuSales();
 
-  // GASに送信（完了を待つ）
-  await postData({ type: "deleteHistory", record: { ...record, index } });
+  await postData({
+    type: "deleteHistory",
+    record: { ...record, index },
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
 
-  // GASから最新データを取得してから自動更新再開
   await loadData();
   autoRefresh = setInterval(loadData, 5000);
 }
@@ -329,7 +346,11 @@ async function clearHistory() {
   if (!checkAdmin()) return;
   let result = confirm("本当に履歴をすべて削除しますか？");
   if (!result) return;
-  await postData({ type: "clearAll" });
+  await postData({
+    type: "clearAll",
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
   await loadData();
   alert("削除しました");
 }
@@ -350,7 +371,7 @@ function renderProducts() {
       let del = document.createElement("button");
       del.textContent = "×";
       del.style.cssText = "background:red;color:white;border:none;border-radius:50%;width:28px;height:28px;cursor:pointer;flex-shrink:0;font-size:14px;";
-      del.onclick = () => deleteProduct(index);
+      del.onclick = () => deleteProduct(index, p.name);
       wrapper.appendChild(del);
     }
     container.appendChild(wrapper);
@@ -365,17 +386,28 @@ async function addProduct() {
     alert("正しく入力してください");
     return;
   }
-  await postData({ type: "addProduct", product: { name, price } });
+  await postData({
+    type: "addProduct",
+    product: { name, price },
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
   await loadData();
   document.getElementById("newName").value  = "";
   document.getElementById("newPrice").value = "";
 }
 
 // ===== 商品削除 =====
-async function deleteProduct(index) {
+async function deleteProduct(index, productName) {
   let ok = confirm("この商品を削除しますか？");
   if (!ok) return;
-  await postData({ type: "deleteProduct", index });
+  await postData({
+    type: "deleteProduct",
+    index,
+    productName,
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
   await loadData();
 }
 
@@ -398,7 +430,11 @@ async function clearMenuSales() {
   if (!checkAdmin()) return;
   let ok = confirm("メニュー売上だけリセットしますか？");
   if (!ok) return;
-  await postData({ type: "clearMenuSales" });
+  await postData({
+    type: "clearMenuSales",
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
   await loadData();
   alert("メニュー売上をリセットしました");
 }
@@ -413,12 +449,13 @@ function showScreen(screenId) {
 
 // ===== 管理者ログイン =====
 function adminLogin() {
-  // パスワード未設定の場合はそのままログイン
   if (!adminPassword) {
     isAdmin = true;
     document.getElementById("adminControls").classList.remove("hidden");
     document.getElementById("adminPanel").classList.remove("hidden");
+    document.getElementById("staffPanel").classList.remove("hidden");
     renderProducts();
+    renderStaff();
     alert("ログイン成功！まずパスワードを設定してください。");
     return;
   }
@@ -427,7 +464,9 @@ function adminLogin() {
     isAdmin = true;
     document.getElementById("adminControls").classList.remove("hidden");
     document.getElementById("adminPanel").classList.remove("hidden");
+    document.getElementById("staffPanel").classList.remove("hidden");
     renderProducts();
+    renderStaff();
     alert("ログイン成功（管理者モードON）");
   } else {
     alert("パスワードが違います");
@@ -439,6 +478,7 @@ function adminLogout() {
   isAdmin = false;
   document.getElementById("adminControls").classList.add("hidden");
   document.getElementById("adminPanel").classList.add("hidden");
+  document.getElementById("staffPanel").classList.add("hidden");
   renderProducts();
   alert("ログアウトしました（管理者モードOFF）");
 }
@@ -453,7 +493,6 @@ async function setPassword() {
   if (!newPass) { alert("パスワードが入力されていません"); return; }
   let confirmPass = prompt("もう一度入力してください");
   if (newPass !== confirmPass) { alert("パスワードが一致しません"); return; }
-
   await postData({ type: "setPassword", password: newPass });
   adminPassword = newPass;
   alert("パスワードを設定しました");
@@ -468,5 +507,81 @@ function checkAdmin() {
   return false;
 }
 
+// ===== 従業員一覧表示 =====
+function renderStaff() {
+  let container = document.getElementById("staffList");
+  container.innerHTML = "";
+  staff.forEach((s, index) => {
+    let div = document.createElement("div");
+    div.style.cssText = "display:flex;align-items:center;gap:8px;padding:5px 8px;background:#f9f9f9;border-radius:6px;margin-bottom:4px;";
+    let number = document.createElement("span");
+    number.textContent = s.number;
+    number.style.cssText = "font-weight:bold;color:#555;width:50px;font-size:13px;";
+    let name = document.createElement("span");
+    name.textContent = s.name;
+    name.style.cssText = "flex:1;font-size:13px;";
+    let del = document.createElement("button");
+    del.textContent = "×";
+    del.style.cssText = "background:red;color:white;border:none;border-radius:50%;width:22px;height:22px;cursor:pointer;font-size:12px;flex-shrink:0;padding:0;";
+    del.onclick = () => deleteStaff(index, s.name);
+    div.appendChild(number);
+    div.appendChild(name);
+    div.appendChild(del);
+    container.appendChild(div);
+  });
+}
+
+// ===== 従業員追加 =====
+async function addStaff() {
+  let number = document.getElementById("newStaffNumber").value.trim();
+  let name   = document.getElementById("newStaffName").value.trim();
+  if (!number || !name) { alert("番号と名前を入力してください"); return; }
+  if (number.length !== 4 || isNaN(number)) { alert("番号は4桁の数字にしてください"); return; }
+  if (staff.find(s => s.number === number)) { alert("その番号はすでに登録されています"); return; }
+  await postData({
+    type: "addStaff",
+    staff: { number, name },
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
+  await loadData();
+  renderStaff();
+  document.getElementById("newStaffNumber").value = "";
+  document.getElementById("newStaffName").value   = "";
+}
+
+// ===== 従業員削除 =====
+async function deleteStaff(index, deletedName) {
+  let ok = confirm(deletedName + " を削除しますか？");
+  if (!ok) return;
+  await postData({
+    type: "deleteStaff",
+    index,
+    deletedName,
+    staffNumber: currentStaff ? currentStaff.number : "",
+    staffName:   currentStaff ? currentStaff.name   : ""
+  });
+  await loadData();
+  renderStaff();
+}
+
+// ===== ログイン中従業員を表示 =====
+function updateActiveStaffDisplay(activeStaff) {
+  const el = document.getElementById("activeStaffDisplay");
+  if (!el) return;
+  if (activeStaff.length === 0) {
+    el.textContent = "";
+    return;
+  }
+  el.textContent = "ログイン中：" + activeStaff.map(s => s.name).join("、");
+}
+
 // ===== 5秒ごとに自動更新 =====
 let autoRefresh = setInterval(loadData, 5000);
+
+// ===== 1分ごとにハートビート送信（ページを開いている間はログイン中） =====
+setInterval(() => {
+  if (currentStaff) {
+    postData({ type: "login", staffNumber: currentStaff.number, staffName: currentStaff.name });
+  }
+}, 60 * 1000);
