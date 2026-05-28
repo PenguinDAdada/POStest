@@ -127,6 +127,52 @@
       color: #1565c0;
       margin-bottom: 8px;
     }
+    @media (max-width: 480px) {
+  .container {
+    flex-direction: column;
+  }
+  .left {
+    width: 100%;
+  }
+  .right {
+    width: 100%;
+    height: auto;
+    position: static;
+    box-shadow: none;
+  }
+  #cart {
+    max-height: 200px;
+  }
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .pad {
+    grid-template-columns: repeat(3, 80px);
+  }
+  @media (max-width: 480px) {
+  .container {
+    flex-direction: column;
+  }
+  .left {
+    width: 100%;
+  }
+  .right {
+    width: 100%;
+    height: auto;
+    position: static;
+    box-shadow: none;
+  }
+  #cart {
+    max-height: 200px;
+  }
+  .grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  .pad {
+    grid-template-columns: repeat(3, 80px);
+  }
+}
+}
   </style>
 </head>
 <body>
